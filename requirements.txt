@@ -1,0 +1,7 @@
+python-dotenv
+requests
+
+
+
+# Not Exactly Needed
+pretty-json

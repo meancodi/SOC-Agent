@@ -1,0 +1,16 @@
+import sys, os
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
+from wazuh_indexer import WazuhIndexerClient
+from pretty_json import format_json
+
+client = WazuhIndexerClient()
+
+alert_id = "bruhh"
+
+result = client.get_alert(alert_id=alert_id)
+
+if result is None:
+    print("No result found")
+else:
+    print(format_json(result))
