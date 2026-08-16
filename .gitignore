@@ -3,4 +3,3 @@ Wazuh_credntials.txt
 __pycache__/
 *.pyc
 .venv/
-tools/

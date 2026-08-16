@@ -70,3 +70,166 @@ class WazuhIndexerClient:
             return None
 
         return hits[0]
+
+    def search_events(self, agent_id: str, start_time: str, end_time: str,size: int = 50):
+        url = f"{self.base_url}/wazuh-alerts-4.x-*/_search"
+
+        query = {
+            "bool": {
+                "must": [
+                    {
+                        "term": {
+                            "agent.id": agent_id
+                        }
+                    }
+                ],
+                "filter": [
+                    {
+                        "range": {
+                            "timestamp": {
+                                "gte": start_time,
+                                "lte": end_time
+                            }
+                        }
+                    }
+                ]
+            }
+        }
+
+        response = requests.post(
+            url,
+            auth=(self.username, self.password),
+            headers={"Content-Type": "application/json"},
+            json={
+                "size": size,
+                "query": query,
+                "sort": [
+                    {
+                        "timestamp": {
+                            "order": "asc"
+                        }
+                    }
+                ]
+            },
+            verify=False,
+            timeout=10
+        )
+
+        response.raise_for_status()
+
+        return response.json()
+
+    def search_authentication_events(self, agent_id: str, start_time: str, end_time: str, size: int = 50):
+        url = f"{self.base_url}/wazuh-alerts-4.x-*/_search"
+
+        query = {
+            "bool": {
+                "must": [
+                    {
+                        "term": {
+                            "agent.id": agent_id
+                        }
+                    }
+                ],
+                "filter": [
+                    {
+                        "range": {
+                            "timestamp": {
+                                "gte": start_time,
+                                "lte": end_time
+                            }
+                        }
+                    }
+                ],
+                "should": [
+                    {
+                        "term": {
+                            "decoder.name": "sshd"
+                        }
+                    },
+                    {
+                        "term": {
+                            "decoder.name": "pam"
+                        }
+                    }
+                ],
+                "minimum_should_match": 1
+            }
+        }
+
+        response = requests.post(
+            url,
+            auth=(self.username, self.password),
+            headers={"Content-Type": "application/json"},
+            json={
+                "size": size,
+                "query": query,
+                "sort": [
+                    {
+                        "timestamp": {
+                            "order": "asc"
+                        }
+                    }
+                ]
+            },
+            verify=False,
+            timeout=10
+        )
+
+        response.raise_for_status()
+
+        return response.json()
+
+    def search_process_events(self,agent_id: str,start_time: str,end_time: str,size: int = 50):
+
+        url = f"{self.base_url}/wazuh-alerts-4.x-*/_search"
+
+        query = {
+            "bool": {
+                "must": [
+                    {
+                        "term": {
+                            "agent.id": agent_id
+                        }
+                    },
+                    {
+                        "exists": {
+                            "field": "data.command"
+                        }
+                    }
+                ],
+                "filter": [
+                    {
+                        "range": {
+                            "timestamp": {
+                                "gte": start_time,
+                                "lte": end_time
+                            }
+                        }
+                    }
+                ]
+            }
+        }
+
+        response = requests.post(
+            url,
+            auth=(self.username, self.password),
+            headers={"Content-Type": "application/json"},
+            json={
+                "size": size,
+                "query": query,
+                "sort": [
+                    {
+                        "timestamp": {
+                            "order": "asc"
+                        }
+                    }
+                ]
+            },
+            verify=False,
+            timeout=10
+        )
+
+        response.raise_for_status()
+
+        return response.json()

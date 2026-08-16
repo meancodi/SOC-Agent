@@ -6,7 +6,7 @@ from pretty_json import format_json
 
 client = WazuhIndexerClient()
 
-alert_id = "bruhh"
+alert_id = "V5uiCqAB0yAL2NcCYXbz"
 
 result = client.get_alert(alert_id=alert_id)
 
