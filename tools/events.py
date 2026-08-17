@@ -1,18 +1,33 @@
-import sys, os
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-
 from wazuh_indexer import WazuhIndexerClient
 
-def search_wazuh_events(agent_id: str, start_time: str, end_time: str):
-    
+
+def search_wazuh_events(
+    agent_id: str,
+    start_time: str,
+    end_time: str
+):
+    """
+    Search all Wazuh events for an agent within a time range.
+
+    This intentionally performs a broad search. The investigator
+    is responsible for interpreting and correlating the returned
+    events.
+    """
+
     if not isinstance(agent_id, str) or not agent_id.strip():
-        raise ValueError("agent_id must be a non-empty string")
+        raise ValueError(
+            "agent_id must be a non-empty string"
+        )
 
     if not isinstance(start_time, str) or not start_time.strip():
-        raise ValueError("start_time must be a non-empty string")
+        raise ValueError(
+            "start_time must be a non-empty string"
+        )
 
     if not isinstance(end_time, str) or not end_time.strip():
-        raise ValueError("end_time must be a non-empty string")
+        raise ValueError(
+            "end_time must be a non-empty string"
+        )
 
     client = WazuhIndexerClient()
 
@@ -22,18 +37,20 @@ def search_wazuh_events(agent_id: str, start_time: str, end_time: str):
         end_time=end_time.strip()
     )
 
-    hits = result["hits"]["hits"]
+    hits = result.get("hits", {}).get("hits", [])
 
     events = []
 
     for hit in hits:
-        source = hit["_source"]
+        source = hit.get("_source", {})
 
         events.append({
-            "event_id": hit["_id"],
+            "event_id": hit.get("_id"),
             "timestamp": source.get("timestamp"),
             "agent": source.get("agent"),
             "rule": source.get("rule"),
+            "decoder": source.get("decoder"),
+            "data": source.get("data"),
             "full_log": source.get("full_log")
         })
 

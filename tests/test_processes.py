@@ -1,7 +1,5 @@
-import sys, os
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../tools")))
 
-from processes import get_process_events
+from tools.processes import get_process_events
 
 
 result = get_process_events(

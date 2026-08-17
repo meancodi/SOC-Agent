@@ -1,5 +1,4 @@
 import os
-
 import requests
 import urllib3
 from dotenv import load_dotenv
@@ -233,3 +232,7 @@ class WazuhIndexerClient:
         response.raise_for_status()
 
         return response.json()
+
+
+# SSH Tunnel command
+# ssh -L 9200:127.0.0.1:9200 vboxuser@192.168.56.101

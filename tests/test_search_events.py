@@ -1,7 +1,5 @@
-import sys, os
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../tools/")))
 
-from events import search_wazuh_events
+from tools.events import search_wazuh_events
 
 
 result = search_wazuh_events(

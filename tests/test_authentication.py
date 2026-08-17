@@ -1,7 +1,6 @@
-import sys, os
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../tools")))
 
-from authentication import get_authentication_events
+
+from tools.authentication import get_authentication_events
 
 
 result = get_authentication_events(

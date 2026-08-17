@@ -1,5 +1,3 @@
-import sys, os
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from wazuh_indexer import WazuhIndexerClient
 
@@ -35,8 +33,8 @@ def get_alert(alert_id: str):
     }
 
 
-"""
-To Test get alerts
-"""
+# """
+# To Test get alerts
+# """
 # from pretty_json import format_json
 # print(format_json(get_alert("V5uiCqAB0yAL2NcCYXbz")))
