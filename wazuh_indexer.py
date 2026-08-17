@@ -40,7 +40,7 @@ class WazuhIndexerClient:
 
         return response.json()
 
-    def get_alert(self, alert_id, ):
+    def get_alert(self, alert_id):
         url = f"{self.base_url}/wazuh-alerts-4.x-*/_search"
 
         response = requests.post(
@@ -70,7 +70,7 @@ class WazuhIndexerClient:
 
         return hits[0]
 
-    def search_events(self, agent_id: str, start_time: str, end_time: str,size: int = 50):
+    def search_events(self, agent_id: str, start_time: str, end_time: str,size: int = 10):
         url = f"{self.base_url}/wazuh-alerts-4.x-*/_search"
 
         query = {
@@ -118,7 +118,7 @@ class WazuhIndexerClient:
 
         return response.json()
 
-    def search_authentication_events(self, agent_id: str, start_time: str, end_time: str, size: int = 50):
+    def search_authentication_events(self, agent_id: str, start_time: str, end_time: str, size: int = 10):
         url = f"{self.base_url}/wazuh-alerts-4.x-*/_search"
 
         query = {
@@ -179,7 +179,7 @@ class WazuhIndexerClient:
 
         return response.json()
 
-    def search_process_events(self,agent_id: str,start_time: str,end_time: str,size: int = 50):
+    def search_process_events(self,agent_id: str,start_time: str,end_time: str,size: int = 10):
 
         url = f"{self.base_url}/wazuh-alerts-4.x-*/_search"
 

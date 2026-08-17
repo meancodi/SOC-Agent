@@ -11,17 +11,31 @@ from state.investigation import InvestigationState
 
 class Investigator:
 
+    # Evidence trimming for the LLM context only. The full,
+    # untrimmed evidence always stays in InvestigationState for
+    # the final report - these limits only shape what gets sent
+    # to the model on each decision turn, since raw Wazuh events
+    # (full_log, decoder, nested rule metadata) are large enough
+    # to overflow a local model's context window within 1-2 tool
+    # calls otherwise.
+    DEFAULT_MAX_EVENTS_FOR_LLM = 8
+    DEFAULT_MAX_STRING_LENGTH = 300
+
     def __init__(
         self,
         state: InvestigationState,
         max_steps: int = 10,
-        max_decision_retries: int = 2
+        max_decision_retries: int = 3,
+        max_events_for_llm: int = DEFAULT_MAX_EVENTS_FOR_LLM,
+        max_string_length: int = DEFAULT_MAX_STRING_LENGTH
     ):
         self.state = state
         self.llm = LocalLLM()
 
         self.max_steps = max_steps
         self.max_decision_retries = max_decision_retries
+        self.max_events_for_llm = max_events_for_llm
+        self.max_string_length = max_string_length
 
     # =========================================================
     # TOOL EXECUTION
@@ -100,14 +114,109 @@ class Investigator:
     # LLM CONTEXT
     # =========================================================
 
+    def _truncate_strings(self, value):
+        """
+        Recursively shorten any string longer than
+        max_string_length. Wazuh full_log lines and some rule
+        descriptions can be long enough on their own to matter.
+        """
+
+        if isinstance(value, str):
+            if len(value) > self.max_string_length:
+                return value[:self.max_string_length] + "...[truncated]"
+            return value
+
+        if isinstance(value, dict):
+            return {
+                key: self._truncate_strings(item)
+                for key, item in value.items()
+            }
+
+        if isinstance(value, list):
+            return [
+                self._truncate_strings(item)
+                for item in value
+            ]
+
+        return value
+
+    def _summarize_event(self, event):
+        """
+        Drop the raw full_log line from a single event/alert
+        before it goes to the LLM. full_log duplicates
+        information already present in the structured rule,
+        decoder, and data fields, and is the single largest
+        contributor to context bloat.
+
+        The untouched original stays in InvestigationState -
+        this only affects what the model sees.
+        """
+
+        if not isinstance(event, dict):
+            return event
+
+        trimmed = {
+            key: value
+            for key, value in event.items()
+            if key != "full_log"
+        }
+
+        return self._truncate_strings(trimmed)
+
+    def _summarize_tool_result(self, result):
+        """
+        Cap the number of events shown per tool result and strip
+        bloat from each one. Tool results with an "events" list
+        (search_wazuh_events, get_authentication_events,
+        get_process_events) are capped at max_events_for_llm;
+        the model is told when results were cut so it knows to
+        narrow its time range instead of assuming it saw
+        everything.
+        """
+
+        if not isinstance(result, dict):
+            return result
+
+        summarized = dict(result)
+
+        events = summarized.get("events")
+
+        if isinstance(events, list):
+
+            visible_events = events[:self.max_events_for_llm]
+
+            summarized["events"] = [
+                self._summarize_event(event)
+                for event in visible_events
+            ]
+
+            if len(events) > self.max_events_for_llm:
+                summarized["note"] = (
+                    f"Showing {self.max_events_for_llm} of "
+                    f"{len(events)} matching events "
+                    f"(count={summarized.get('count')}). "
+                    "Narrow the time range for a more focused "
+                    "view if needed."
+                )
+
+        evidence = summarized.get("evidence")
+
+        if isinstance(evidence, dict):
+            summarized["evidence"] = self._summarize_event(evidence)
+
+        return summarized
+
     def _build_investigation_context(self):
         """
         Build a compact representation of the investigation
         state for the LLM.
 
-        Tool results are kept in evidence. Tool call history
+        Tool results are kept in evidence, but summarized before
+        being sent to the model (see _summarize_tool_result) so
+        the context stays well within the configured num_ctx even
+        across several investigation steps. Tool call history
         contains only metadata here to avoid duplicating large
-        results in the model context.
+        results a second time in the model context.
         """
 
         tool_history = []
@@ -119,13 +228,20 @@ class Investigator:
                 "arguments": call.get("arguments")
             })
 
+        summarized_alert = self._summarize_event(self.state.alert)
+
+        summarized_evidence = [
+            self._summarize_tool_result(item)
+            for item in self.state.evidence
+        ]
+
         return json.dumps(
             {
                 "incident_id": self.state.incident_id,
 
-                "alert": self.state.alert,
+                "alert": summarized_alert,
 
-                "evidence": self.state.evidence,
+                "evidence": summarized_evidence,
 
                 "tool_calls": tool_history,
 
@@ -139,9 +255,66 @@ class Investigator:
     # SYSTEM PROMPT
     # =========================================================
 
+    def _build_example_decision(self):
+        """
+        Build a one-shot example decision from the real tool
+        registry, so the example can never drift out of sync
+        with the actual tool names or parameter names.
+
+        A weak local model copies shape far more reliably than
+        it follows abstract rules, so this example is the most
+        important part of the prompt for correctness.
+        """
+
+        example_tool_name = "get_authentication_events"
+
+        tool_definition = TOOLS.get(example_tool_name)
+
+        if tool_definition is None:
+            # Fall back to whatever the first non-get_alert tool is,
+            # in case the registry changes in the future.
+            example_tool_name = next(
+                name for name in TOOLS if name != "get_alert"
+            )
+            tool_definition = TOOLS[example_tool_name]
+
+        example_arguments = {}
+
+        for parameter_name in tool_definition.get("required", []):
+            if parameter_name == "agent_id":
+                example_arguments[parameter_name] = "001"
+            elif parameter_name == "start_time":
+                example_arguments[parameter_name] = "2026-01-01T00:00:00Z"
+            elif parameter_name == "end_time":
+                example_arguments[parameter_name] = "2026-01-01T01:00:00Z"
+            elif parameter_name == "alert_id":
+                example_arguments[parameter_name] = "WJuiCqAB0yAL2NcCZXbq"
+            else:
+                example_arguments[parameter_name] = "example_value"
+
+        tool_call_example = {
+            "action": "tool",
+            "tool": example_tool_name,
+            "arguments": example_arguments
+        }
+
+        finish_example = {
+            "action": "finish",
+            "tool": None,
+            "arguments": None
+        }
+
+        return tool_call_example, finish_example
+
     def _build_system_prompt(self):
 
         tool_descriptions = get_tool_descriptions()
+
+        tool_names = list(TOOLS.keys())
+
+        tool_call_example, finish_example = (
+            self._build_example_decision()
+        )
 
         return f"""
 You are a SOC investigation agent.
@@ -153,57 +326,116 @@ incident and then decide when the investigation can finish.
 
 AVAILABLE TOOLS
 
+The ONLY valid values for "tool" are exactly these strings:
+
+{json.dumps(tool_names)}
+
+Do not use any tool name that is not in this exact list. Do not
+add prefixes, suffixes, or namespaces to a tool name.
+
+Full tool definitions, including required parameter names:
+
 {json.dumps(tool_descriptions, indent=2)}
+
+RESPONSE FORMAT
+
+You must respond with a single JSON object shaped exactly like
+one of the two examples below. Copy the shape exactly. Do not
+add extra keys. Do not wrap it in another object.
+
+Example: calling a tool
+{json.dumps(tool_call_example, indent=2)}
+
+Example: finishing the investigation
+{json.dumps(finish_example, indent=2)}
+
+Notice in the tool-call example:
+- "tool" is one of the exact strings from AVAILABLE TOOLS above.
+- Every key inside "arguments" is one of that tool's exact
+  parameter names shown in the tool definition. Nothing else.
 
 INVESTIGATION RULES
 
-1. Only use tools listed above.
+1. Only use tools from the AVAILABLE TOOLS list above.
 
-2. Never invent a tool.
+2. Never invent a tool name. Never invent an argument name.
 
-3. Never invent an argument name.
+3. Use exactly the parameter names defined for the selected tool,
+   spelled exactly as shown in the tool definition.
 
-4. Use exactly the parameter names defined for the selected tool.
-
-5. Do not generate Wazuh DSL, OpenSearch queries, event_query
+4. Do not generate Wazuh DSL, OpenSearch queries, event_query
    objects, or arbitrary query structures.
 
-6. search_wazuh_events returns broad event context for the
+5. search_wazuh_events returns broad event context for the
    specified agent and time range. Use it when broad context
    around the alert is useful.
 
-7. get_authentication_events is available when authentication
+6. get_authentication_events is available when authentication
    activity needs more focused investigation.
 
-8. get_process_events is available when process or command
+7. get_process_events is available when process or command
    execution activity needs more focused investigation.
 
-9. The initial alert has already been retrieved. Do not call
+8. The initial alert has already been retrieved. Do not call
    get_alert again.
 
-10. Examine the alert and previously collected evidence before
-    selecting another tool.
+9. Examine the alert and previously collected evidence before
+   selecting another tool.
 
-11. Do not finish immediately after retrieving the alert.
+10. Do not finish after using only one investigative tool. Use
+    at least two different tools (for example
+    search_wazuh_events and get_authentication_events) before
+    finishing, so the investigation is not based on a single
+    narrow query.
 
-12. Collect additional evidence when the current evidence does
+11. Collect additional evidence when the current evidence does
     not adequately explain the incident.
 
-13. Do not repeat the exact same tool call unless there is a
+12. Do not repeat the exact same tool call unless there is a
     specific investigative reason.
 
-14. Do not invent timestamps, agent IDs, or alert IDs. Reuse
+13. Do not invent timestamps, agent IDs, or alert IDs. Reuse
     values present in the investigation state whenever possible.
 
-15. Finish when the available evidence is sufficient to form
+14. Finish when the available evidence is sufficient to form
     a reasonable security assessment.
 
-16. Return only the requested JSON decision.
+15. Return only the JSON decision object. No explanation text,
+    no markdown, no code fences.
 """
 
     # =========================================================
     # DECISION
     # =========================================================
+
+    def _distinct_investigative_tools_used(self):
+        """
+        Set of tool names used so far, excluding get_alert.
+        """
+
+        return {
+            call.get("tool")
+            for call in self.state.tool_calls
+            if call.get("tool") != "get_alert"
+        }
+
+    def _has_investigative_evidence(self):
+        """
+        True once at least two distinct tools other than
+        get_alert have been called. Requiring more than one
+        distinct tool (rather than just one call) pushes the
+        model toward genuinely broadening its investigation
+        instead of being satisfied with a single narrow query -
+        a single search_wazuh_events call, for example, is not
+        enough on its own to justify concluding the investigation.
+
+        Shared by decide_next_action (to structurally block
+        "finish" in the schema) and _validate_decision (as a
+        defense-in-depth check), so there is exactly one
+        definition of "has real investigation happened yet".
+        """
+
+        return len(self._distinct_investigative_tools_used()) >= 2
 
     def decide_next_action(self):
 
@@ -226,7 +458,8 @@ INVESTIGATION RULES
 
             response = self.llm.decide(
                 messages,
-                allowed_tools=TOOLS.keys()
+                allowed_tools=TOOLS.keys(),
+                allow_finish=self._has_investigative_evidence()
             )
 
             print()
@@ -330,16 +563,41 @@ INVESTIGATION RULES
                     "the initial alert."
                 )
 
-            investigative_calls = [
-                call
-                for call in self.state.tool_calls
-                if call.get("tool") != "get_alert"
-            ]
+            if not self._has_investigative_evidence():
 
-            if not investigative_calls:
+                unused_tools = sorted(
+                    set(TOOLS.keys())
+                    - {"get_alert"}
+                    - self._distinct_investigative_tools_used()
+                )
+
                 raise ValueError(
-                    "Cannot finish immediately after retrieving "
-                    "the alert. Collect additional evidence first."
+                    "Cannot finish yet. At least two distinct "
+                    "investigative tools must be used first. "
+                    "Tools not yet used: "
+                    f"{unused_tools}"
+                )
+
+            # A "finish" decision must not also carry tool-call
+            # content. The schema allows tool/arguments to be
+            # null OR populated regardless of action, so this is
+            # not caught by the JSON schema itself - the model
+            # can blend the shape of a tool call into a finish
+            # decision, and that must be rejected explicitly
+            # rather than silently accepted as "finish".
+
+            if decision.get("tool") is not None:
+                raise ValueError(
+                    "A 'finish' decision must have tool set to "
+                    "null. Do not include a tool name when "
+                    "finishing."
+                )
+
+            if decision.get("arguments") is not None:
+                raise ValueError(
+                    "A 'finish' decision must have arguments set "
+                    "to null. Do not include arguments when "
+                    "finishing."
                 )
 
             return

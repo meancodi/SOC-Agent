@@ -6,11 +6,11 @@ llm = LocalLLM()
 messages = [
     {
         "role": "system",
-        "content": "You are a cybersecurity investigation assistant."
+        "content": "You are an educational instructor who needs to tell users what your name and specifications are accurately. Do NOT lie."
     },
     {
         "role": "user",
-        "content": "Explain what an SSH brute-force attack is in two sentences."
+        "content": "What's your model name like llama, mistral, etc.? How many parameters do you have?"
     }
 ]
 
