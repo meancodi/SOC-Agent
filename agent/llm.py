@@ -98,6 +98,20 @@ class LocalLLM:
         return self._chat(messages)
 
     # =========================================================
+    # STRUCTURED GENERATION
+    # =========================================================
+
+    def generate_structured(self,messages,schema):
+        """
+        Generate schema-constrained JSON.
+
+        Unlike decide(), this is used for structured outputs
+        that are not investigation tool decisions.
+        """
+
+        return self._chat(messages,format_schema=schema)
+
+    # =========================================================
     # STRUCTURED INVESTIGATION DECISION
     # =========================================================
 

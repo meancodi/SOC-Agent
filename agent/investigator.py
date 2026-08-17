@@ -1,13 +1,9 @@
 import json
 
 from agent.llm import LocalLLM
-from agent.tool_registry import (
-    TOOLS,
-    execute_tool,
-    get_tool_descriptions
-)
+from agent.tool_registry import (TOOLS,execute_tool,get_tool_descriptions)
 from state.investigation import InvestigationState
-
+from state.result import InvestigationResult
 
 class Investigator:
 
@@ -725,14 +721,454 @@ INVESTIGATION RULES
                     "called with the same arguments."
                 )
 
+        # =========================================================
+    # FINAL INVESTIGATION RESULT
+    # =========================================================
+
+    def generate_investigation_result(self):
+        """
+        Generate the structured conclusion of the investigation.
+
+        This is called only after the investigation loop decides
+        that sufficient evidence has been collected.
+        """
+
+        messages = [
+            {
+                "role": "system",
+                "content": """
+You are the final analysis stage of a SOC investigation.
+
+Review the Wazuh alert and all collected investigation evidence.
+
+Produce a structured investigation result.
+
+Important rules:
+
+1. Base every finding on the supplied evidence.
+2. Do not invent events, users, IP addresses, commands,
+   timestamps, or attack activity.
+3. Distinguish observed evidence from interpretation.
+4. If the evidence does not establish something, state that
+   clearly as a limitation.
+5. Confidence must be a decimal between 0 and 1.
+    Examples:
+    0.95 = very high confidence
+    0.75 = moderate-high confidence
+    0.50 = uncertain
+    0.20 = very low confidence
+    Never use percentages such as 95 or 75.
+6. Keep the conclusion concise and evidence-based.
+7. Timeline entries must use timestamps present in the evidence.
+8. Do not recommend response actions yet.
+9. This stage is analysis only. Response decisions belong to
+   a later stage.
+10.Each finding must have exactly one type:
+
+    observed:
+    A fact directly present in the collected evidence.
+
+    detection:
+    A classification explicitly made by Wazuh or another
+    security detection system.
+
+    inference:
+    An analyst conclusion derived from one or more observations
+    or detections.
+
+    Do not present an inference as an observed fact.
+    Do not present a Wazuh detection classification as an
+    independently verified fact.
+11. Every factual finding must reference one or more supplied
+    evidence IDs.
+
+    Do not invent evidence IDs.
+
+    Before writing a limitation, inspect the supplied evidence
+    to determine whether the information actually exists.
+
+Return only the JSON object matching the supplied schema.
+"""
+            },
+            {
+                "role": "user",
+                "content": self._build_investigation_context()
+            }
+        ]
+
+        schema = {
+            "type": "object",
+
+            "properties": {
+
+                "summary": {
+                    "type": "string",
+                    "description": (
+                        "A concise summary of what was established during "
+                        "the investigation. Do not include unsupported claims."
+                    )
+                },
+
+                "findings": {
+                    "type": "array",
+                    "description": (
+                        "Evidence-grounded findings produced from the "
+                        "investigation."
+                    ),
+
+                    "items": {
+                        "type": "object",
+
+                        "properties": {
+
+                            "finding": {
+                                "type": "string",
+                                "description": (
+                                    "A specific factual observation, Wazuh "
+                                    "detection classification, or analyst "
+                                    "inference."
+                                )
+                            },
+
+                            "type": {
+                                "type": "string",
+                                "enum": [
+                                    "observed",
+                                    "detection",
+                                    "inference"
+                                ],
+                                "description": (
+                                    "observed = directly supported by an event; "
+                                    "detection = explicitly classified by Wazuh; "
+                                    "inference = analyst conclusion derived "
+                                    "from evidence."
+                                )
+                            },
+
+                            "evidence_ids": {
+                                "type": "array",
+                                "minItems": 1,
+                                "items": {
+                                    "type": "string"
+                                },
+                                "description": (
+                                    "IDs of the collected evidence that directly "
+                                    "support this finding."
+                                )
+                            },
+
+                            "confidence": {
+                                "type": "number",
+                                "minimum": 0,
+                                "maximum": 1,
+                                "description": (
+                                    "Confidence in this finding, represented "
+                                    "as a decimal from 0.0 to 1.0."
+                                )
+                            }
+                        },
+
+                        "required": [
+                            "finding",
+                            "type",
+                            "evidence_ids",
+                            "confidence"
+                        ],
+
+                        "additionalProperties": False
+                    }
+                },
+
+                "timeline": {
+                    "type": "array",
+                    "description": (
+                        "Chronological sequence of significant events "
+                        "observed during the investigation."
+                    ),
+
+                    "items": {
+                        "type": "object",
+
+                        "properties": {
+
+                            "timestamp": {
+                                "type": "string",
+                                "description": (
+                                    "Timestamp exactly as represented in the "
+                                    "supporting evidence."
+                                )
+                            },
+
+                            "event": {
+                                "type": "string",
+                                "description": (
+                                    "Concise description of the event. "
+                                    "Do not introduce information not present "
+                                    "in the evidence."
+                                )
+                            },
+
+                            "evidence_id": {
+                                "type": "string",
+                                "description": (
+                                    "ID of the collected evidence corresponding "
+                                    "to this timeline event."
+                                )
+                            }
+                        },
+
+                        "required": [
+                            "timestamp",
+                            "event",
+                            "evidence_id"
+                        ],
+
+                        "additionalProperties": False
+                    }
+                },
+
+                "conclusion": {
+                    "type": "string",
+                    "description": (
+                        "Overall analyst conclusion based only on the "
+                        "collected evidence and findings."
+                    )
+                },
+
+                "confidence": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 1,
+                    "description": (
+                        "Overall confidence in the investigation conclusion, "
+                        "represented as a decimal from 0.0 to 1.0."
+                    )
+                },
+
+                "limitations": {
+                    "type": "array",
+                    "description": (
+                        "Important uncertainties or information that could "
+                        "not be established from the collected evidence."
+                    ),
+
+                    "items": {
+                        "type": "string"
+                    }
+                }
+            },
+
+            "required": [
+                "summary",
+                "findings",
+                "timeline",
+                "conclusion",
+                "confidence",
+                "limitations"
+            ],
+
+            "additionalProperties": False
+        }
+
+        response = self.llm.generate_structured(
+            messages,
+            schema
+        )
+
+        print()
+        print("RAW INVESTIGATION RESULT:")
+        print(response)
+
+        try:
+            result = json.loads(response)
+
+        except json.JSONDecodeError as exc:
+
+            raise ValueError(
+                "LLM produced invalid investigation result JSON."
+            ) from exc
+
+        self._validate_investigation_result(
+            result
+        )
+
+        investigation_result = InvestigationResult(
+            incident_id=self.state.incident_id,
+            status="complete",
+            summary=result["summary"],
+            findings=result["findings"],
+            timeline=result["timeline"],
+            conclusion=result["conclusion"],
+            confidence=result["confidence"],
+            limitations=result["limitations"]
+        )
+
+        self.state.findings = (
+            investigation_result.findings
+        )
+
+        self.state.set_final_report(
+            investigation_result.to_dict()
+        )
+
+        return investigation_result
+
+    def _validate_investigation_result(self,result):
+        """
+        Validate the final investigation result before it is
+        accepted into InvestigationState.
+        """
+
+        if not isinstance(result, dict):
+            raise ValueError(
+                "Investigation result must be a JSON object."
+            )
+        finding_type = finding.get("type")
+
+        if finding_type not in {"observed","detection","inference"}:
+            raise ValueError( f"Invalid finding type: {finding_type}")
+
+        required_fields = {
+            "summary",
+            "findings",
+            "timeline",
+            "conclusion",
+            "confidence",
+            "limitations"
+        }
+
+        missing = (
+            required_fields
+            - set(result.keys())
+        )
+
+        if missing:
+            raise ValueError(
+                "Investigation result is missing fields: "
+                f"{sorted(missing)}"
+            )
+
+        if not isinstance(
+            result["summary"],
+            str
+        ):
+            raise ValueError(
+                "Investigation summary must be a string."
+            )
+
+        if not isinstance(
+            result["findings"],
+            list
+        ):
+            raise ValueError(
+                "Investigation findings must be a list."
+            )
+
+        if not isinstance(
+            result["timeline"],
+            list
+        ):
+            raise ValueError(
+                "Investigation timeline must be a list."
+            )
+
+        if not isinstance(
+            result["conclusion"],
+            str
+        ):
+            raise ValueError(
+                "Investigation conclusion must be a string."
+            )
+
+        confidence = result["confidence"]
+
+        if not isinstance(
+            confidence,
+            (int, float)
+        ):
+            raise ValueError(
+                "Investigation confidence must be numeric."
+            )
+
+        if not 0.0 <= confidence <= 1.0:
+            raise ValueError(
+                "Investigation confidence must be between "
+                "0 and 1."
+            )
+
+        if not isinstance(
+            result["limitations"],
+            list
+        ):
+            raise ValueError(
+                "Investigation limitations must be a list."
+            )
+
+        for finding in result["findings"]:
+
+            if not isinstance(
+                finding,
+                dict
+            ):
+                raise ValueError(
+                    "Each finding must be an object."
+                )
+
+            required = {
+                "finding",
+                "evidence_ids",
+                "confidence"
+            }
+
+            missing = (
+                required
+                - set(finding.keys())
+            )
+
+            if missing:
+                raise ValueError(
+                    "Finding is missing fields: "
+                    f"{sorted(missing)}"
+                )
+
+            if not isinstance(
+                finding["finding"],
+                str
+            ):
+                raise ValueError(
+                    "Finding text must be a string."
+                )
+
+            if not isinstance(
+                finding["evidence_ids"],
+                list
+            ):
+                raise ValueError(
+                    "Finding evidence_ids must be a list."
+                )
+
+            finding_confidence = (
+                finding["confidence"]
+            )
+
+            if not isinstance(
+                finding_confidence,
+                (int, float)
+            ):
+                raise ValueError(
+                    "Finding confidence must be numeric."
+                )
+
+            if not 0.0 <= finding_confidence <= 1.0:
+                raise ValueError(
+                    "Finding confidence must be between 0 and 1."
+                )
+
     # =========================================================
     # MAIN LOOP
     # =========================================================
 
-    def run(
-        self,
-        max_steps=None
-    ):
+    def run(self,max_steps=None):
 
         if max_steps is None:
             max_steps = self.max_steps
@@ -789,6 +1225,19 @@ INVESTIGATION RULES
 
             if decision["action"] == "finish":
 
+                print()
+                print(
+                    "Investigation evidence collection complete."
+                )
+
+                print(
+                    "Generating investigation result..."
+                )
+
+                result = (
+                    self.generate_investigation_result()
+                )
+
                 self.state.set_status(
                     "investigation_complete"
                 )
@@ -798,7 +1247,19 @@ INVESTIGATION RULES
                     "Investigation complete."
                 )
 
-                return
+                print()
+                print(
+                    "Investigation result:"
+                )
+
+                print(
+                    json.dumps(
+                        result.to_dict(),
+                        indent=2
+                    )
+                )
+
+                return result
 
             # -------------------------------------------------
             # Execute tool
